@@ -54,6 +54,7 @@ export function perfTui(columns = 120, rows = 40) {
 export function perfSession(messages: unknown[] = []) {
   return {
     messages,
+    state: {},
     subscribe: () => () => {},
     dispose: () => {},
     getSessionStats: () => ({
@@ -183,6 +184,7 @@ export function makeSession(n: number) {
   }
   return {
     messages,
+    state: {},
     subscribe: () => () => {},
     dispose: () => {},
     getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheWrite: 0 } }),

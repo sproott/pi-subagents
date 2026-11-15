@@ -46,6 +46,7 @@ function createViewer(keybindings?: ViewerKeybindings) {
   }));
   const session = {
     messages,
+    state: {},
     subscribe: vi.fn(() => vi.fn()),
   } as any;
   const record = {
@@ -231,7 +232,7 @@ function createFullscreenViewer(keybindings?: ViewerKeybindings) {
   const terminal = { rows: 20, columns: 80 };
   const tui = { mode: "fullscreen", terminal, requestRender: vi.fn() } as any;
   const messages = [{ role: "user", content: Array.from({ length: 100 }, (_, i) => `row-${i}`).join("\n") }];
-  const session = { messages, subscribe: vi.fn(() => vi.fn()) } as any;
+  const session = { messages, state: {}, subscribe: vi.fn(() => vi.fn()) } as any;
   const record = {
     id: "fs-1",
     type: "Explore",

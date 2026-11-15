@@ -221,6 +221,8 @@ export class ConversationViewer implements Component, Focusable {
    * Weak so a compacted-away message doesn't pin its render.
    */
   private readonly markdownCache = new WeakMap<object, { md: Markdown; text: string; failed?: boolean }>();
+  /** Cache key for the in-progress reply: pi hands out a fresh copy of it on every update. */
+  private readonly liveReplyKey = {};
   /** One block per tool call id, so a redraw reuses the component's own caches. */
   private readonly toolBlocks = new Map<string, ToolBlock>();
   /**
@@ -655,8 +657,8 @@ export class ConversationViewer implements Component, Focusable {
   }
 
   /** Render `text` as Markdown, reusing this message's component instance. */
-  private markdownLines(msg: AgentSession["messages"][number], text: string, width: number, dim: boolean): string[] {
-    let entry = this.markdownCache.get(msg);
+  private markdownLines(key: object, text: string, width: number, dim: boolean): string[] {
+    let entry = this.markdownCache.get(key);
     if (!entry) {
       entry = {
         md: new Markdown(
@@ -673,7 +675,7 @@ export class ConversationViewer implements Component, Focusable {
         ),
         text,
       };
-      this.markdownCache.set(msg, entry);
+      this.markdownCache.set(key, entry);
     } else if (entry.text !== text) {
       // Streaming: the message object is stable, its text grows. A failed
       // prefix remains unsafe after append-only deltas, so retry only when the
@@ -788,9 +790,13 @@ export class ConversationViewer implements Component, Focusable {
     }
     const foldedCalls = new Set<string>();
 
+    // `messages` gains a reply only once it finishes; until then it lives here.
+    const streaming = this.session.state.streamingMessage;
+    const live = streaming?.role === "assistant" ? streaming : undefined;
+
     const mode = this.markdownMode();
     let needsSeparator = false;
-    for (const msg of messages) {
+    for (const msg of live ? [...messages, live] : messages) {
       if (msg.role === "user") {
         const text = typeof msg.content === "string"
           ? msg.content
@@ -806,15 +812,17 @@ export class ConversationViewer implements Component, Focusable {
         const toolCalls: ToolCallPart[] = [];
         for (const c of msg.content) {
           if (c.type === "text" && c.text) textParts.push(c.text);
-          else if (c.type === "toolCall") toolCalls.push(c);
+          // A streaming call's arguments are partial, and its block caches them.
+          else if (c.type === "toolCall" && msg !== live) toolCalls.push(c);
         }
+        if (msg === live && textParts.length === 0) continue;
         if (needsSeparator) lines.push(th.fg("dim", "───"));
         lines.push(th.bold("[Assistant]"));
         if (textParts.length > 0) {
           const text = textParts.join("\n").trim();
           lines.push(...(mode === "off"
             ? this.rawLines(text, width, false)
-            : this.markdownLines(msg, text, width, false)));
+            : this.markdownLines(msg === live ? this.liveReplyKey : msg, text, width, false)));
         }
         for (const call of toolCalls) {
           if (!this.toolRendering) {
@@ -860,8 +868,8 @@ export class ConversationViewer implements Component, Focusable {
     }
 
     // Streaming indicator for running agents
-    if (this.record.status === "running" && this.activity) {
-      const act = describeActivity(this.activity.activeTools, this.activity.responseText);
+    if (this.record.status === "running" && this.activity && (this.activity.activeTools.size > 0 || !live?.content.some(c => c.type === "text" && c.text))) {
+      const act = describeActivity(this.activity.activeTools);
       lines.push("");
       lines.push(truncateToWidth(th.fg("accent", "▍ ") + th.fg("dim", act), width));
     }
