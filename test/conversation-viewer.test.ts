@@ -59,6 +59,7 @@ function mockTui(rows = 40, columns = 80) {
 function mockSession(messages: any[] = []) {
   return {
     messages,
+    state: {},
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
     getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheWrite: 0 } }),
@@ -673,6 +674,69 @@ describe("ConversationViewer", () => {
         // if it fires on Markdown output, content is being silently cut.
         expect(content.filter(l => strip(l).endsWith("..."))).toEqual([]);
       }
+    });
+
+    describe("in-progress reply", () => {
+      const reply = (...content: any[]) => ({ role: "assistant", content });
+
+      function liveViewer(streaming: any, activeTools = new Map<string, string>()) {
+        const session = mockSession([{ role: "user", content: "go" }]);
+        session.state = { streamingMessage: streaming };
+        const activity = { activeTools, toolUses: 0, responseText: "", session };
+        const viewer = new ConversationViewer(
+          mockTui(200, 80), session, mockRecord({ status: "running" }), activity as any, ansiTheme(), vi.fn(),
+        );
+        return { session, viewer };
+      }
+
+      it("should render the reply as Markdown when it has not finished", () => {
+        const { viewer } = liveViewer(reply({ type: "text", text: "# Heading\n\n**bold** and more" }));
+
+        const out = strip(viewer.render(80).join("\n"));
+
+        expect(out, "live reply text is in the transcript").toContain("bold and more");
+        expect(out, "live reply is rendered as Markdown").not.toContain("**bold**");
+      });
+
+      it("should reuse one Markdown when each update hands over a fresh copy of the reply", () => {
+        const { session, viewer } = liveViewer(reply({ type: "text", text: "# One" }));
+        viewer.render(80);
+
+        session.state = { streamingMessage: reply({ type: "text", text: "# One two" }) };
+        const out = strip(viewer.render(80).join("\n"));
+
+        expect(out, "the grown text is shown").toContain("One two");
+        expect(markdownConstructions, "one Markdown serves every copy").toBe(1);
+      });
+
+      it("should leave out tool calls when their arguments are still streaming", () => {
+        const { viewer } = liveViewer(reply(
+          { type: "text", text: "Reading now" },
+          { type: "toolCall", id: "c1", name: "read", arguments: { pa: 1 } },
+        ));
+
+        const out = strip(viewer.render(80).join("\n"));
+
+        expect(out, "partial call is not rendered").not.toContain("[Tool: read]");
+      });
+
+      it("should not repeat the reply in the activity line when the reply text is shown", () => {
+        const { viewer } = liveViewer(reply({ type: "text", text: "Unique reply sentence" }));
+
+        const out = strip(viewer.render(80).join("\n"));
+
+        expect(out.split("Unique reply sentence").length - 1, "reply text appears once").toBe(1);
+        expect(out, "no activity line while text streams").not.toContain("▍");
+      });
+
+      it("should show the activity line when the reply has no text yet", () => {
+        const { viewer } = liveViewer(reply({ type: "toolCall", id: "c1", name: "read", arguments: {} }));
+
+        const out = strip(viewer.render(80).join("\n"));
+
+        expect(out, "activity line shows thinking").toContain("▍ thinking…");
+        expect(out, "no empty assistant header for a text-less reply").not.toContain("[Assistant]");
+      });
     });
   });
 

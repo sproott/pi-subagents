@@ -29,6 +29,7 @@ let sessionMessages: unknown[] = [];
 /** Enough of a pi session for the manager to keep, and the viewer to render. */
 const fakeSession = () => ({
   dispose: vi.fn(),
+  state: {},
   subscribe: vi.fn(() => vi.fn()),
   messages: sessionMessages,
   getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheWrite: 0 } }),

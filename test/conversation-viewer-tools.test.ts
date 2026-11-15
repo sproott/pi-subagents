@@ -59,6 +59,7 @@ function session(messages: unknown[], extra: Record<string, ToolRenderers> = {})
   };
   return {
     messages,
+    state: {},
     subscribe: vi.fn(() => vi.fn()),
     sessionManager: { getCwd: () => cwd },
     getToolDefinition: (name: string) => tools[name],
