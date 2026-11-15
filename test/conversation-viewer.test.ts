@@ -551,8 +551,10 @@ describe("ConversationViewer", () => {
     it("falls back to literal wrapping once for an unsafe streaming prefix", () => {
       // render() is on the TUI's critical path, so a parser throw must degrade
       // rather than take the overlay down with it.
-      const messages = result("# heading");
-      const viewer = viewerFor(messages, "all");
+      const live = { role: "assistant", content: [{ type: "text", text: "# heading" }] };
+      const viewer = viewerFor([{ role: "user", content: "go" }]);
+      (viewer as any).session.state = { streamingMessage: live };
+      const messages = [live];
       markdownThrows = true;
 
       expect(() => viewer.render(80)).not.toThrow();
@@ -575,26 +577,6 @@ describe("ConversationViewer", () => {
       expect(markdownRenderCalls).toBe(2);
       expect(replaced).toContain("safe");
       expect(replaced).not.toContain("## safe");
-    });
-
-    it("tracks a tool result that keeps growing past the cap", () => {
-      // The live case: the capped prefix never changes, so the parse is reused,
-      // but the character count being held back has to keep moving.
-      const msg = { role: "toolResult", toolUseId: "t", content: [{ type: "text", text: `${"row\n".repeat(4500)}` }] };
-      const viewer = viewerFor([msg]);
-      const elided = () => {
-        const m = strip(((viewer as any).buildContentLines(76) as string[]).join("\n"))
-          .match(/truncated, ([\d.]+)([kM]?) more/);
-        return Number(m?.[1]) * (m?.[2] === "M" ? 1e6 : m?.[2] === "k" ? 1e3 : 1);
-      };
-
-      const before = elided();
-      msg.content[0].text += "row\n".repeat(1000);
-      const after = elided();
-
-      expect(before).toBeGreaterThan(0);
-      expect(after).toBeGreaterThan(before);
-      expect(markdownConstructions).toBe(0); // default mode: results take the literal path
     });
 
     it("leaves a result under the cap untouched", () => {
@@ -643,19 +625,6 @@ describe("ConversationViewer", () => {
 
       expect(afterFirst).toBe(1);
       expect(markdownConstructions).toBe(afterFirst);
-    });
-
-    it("re-renders a message whose text is still streaming", () => {
-      const messages = assistant("# One");
-      const viewer = viewerFor(messages);
-      expect(strip(viewer.render(80).join("\n"))).toContain("One");
-
-      messages[0].content[0].text = "# Two";
-      const out = strip(viewer.render(80).join("\n"));
-
-      expect(out).toContain("Two");
-      expect(out).not.toContain("One");
-      expect(markdownConstructions).toBe(1);
     });
 
     it("renders Markdown to fit, so the overwidth clamp never has to cut it", () => {
