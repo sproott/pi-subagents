@@ -56,20 +56,18 @@ beforeEach(() => {
 });
 
 describe("ConversationViewer — cost stays linear in transcript length", () => {
-  /** Leaf calls one render makes over a transcript of `n` messages. */
+  /** Leaf calls the first render makes over a transcript of `n` messages. */
   function wrapsFor(n: number, mode: string): number {
     const viewer = mountViewer(ConversationViewer, makeSession(n), undefined, () => mode);
-    viewer.render(120); // prime, so caches are warm and only steady state counts
     counts.wrap = 0;
     counts.markdownRender = 0;
     viewer.render(120);
     return counts.wrap + counts.markdownRender;
   }
 
-  // The viewer rebuilds every line of the transcript on every frame, so the work
-  // is expected to grow with it. What must not happen is growing FASTER than it:
-  // ten times the messages, at most ~ten times the work. A quadratic here is
-  // invisible on a short conversation and locks the TUI on a long one.
+  // Opening the viewer builds every message once, so the work grows with the
+  // transcript. Ten times the messages, at most ~ten times the work: a quadratic
+  // here is invisible on a short conversation and locks the TUI on a long one.
   it("does ~10x the work for 10x the messages (raw wrap path)", () => {
     const small = wrapsFor(30, "off");
     const large = wrapsFor(300, "off");
@@ -84,6 +82,21 @@ describe("ConversationViewer — cost stays linear in transcript length", () => 
 
     expect(small).toBeGreaterThan(0);
     expect(large / small).toBeLessThanOrEqual(11);
+  });
+
+  // A running agent redraws on every streamed token. Finished messages must come
+  // from the cache, or each token re-wraps the whole transcript.
+  it("should not re-wrap finished messages when a frame repeats", () => {
+    for (const mode of ["off", "assistant", "all"]) {
+      const viewer = mountViewer(ConversationViewer, makeSession(60), undefined, () => mode);
+      viewer.render(120);
+      counts.wrap = 0;
+      counts.markdownRender = 0;
+
+      viewer.render(120);
+
+      expect(counts.wrap + counts.markdownRender, `no leaf work on a repeat frame in mode ${mode}`).toBe(0);
+    }
   });
 
   // #259's WeakMap is keyed by the message object. If a refactor ever rebuilds

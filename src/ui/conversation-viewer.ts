@@ -191,6 +191,15 @@ function truncationNote(elided: number): string {
   return `... (truncated, ${humanCount(elided)} more character${elided === 1 ? "" : "s"})`;
 }
 
+/**
+ * Only clamp what actually overflows: `truncateToWidth` takes a slow,
+ * character-by-character path for any line carrying an escape sequence, and a
+ * tool block's rows are already rendered at this width by its component.
+ */
+function clamp(line: string, width: number): string {
+  return visibleWidth(line) > width ? truncateToWidth(line, width) : line;
+}
+
 export class ConversationViewer implements Component, Focusable {
   private scrollOffset = 0;
   private autoScroll = true;
@@ -221,6 +230,8 @@ export class ConversationViewer implements Component, Focusable {
    * Weak so a compacted-away message doesn't pin its render.
    */
   private readonly markdownCache = new WeakMap<object, { md: Markdown; text: string; failed?: boolean }>();
+  /** Each finished message's rows and the inputs they were built from. */
+  private readonly lineCache = new WeakMap<object, { width: number; mode: ViewerMarkdownMode; expanded: boolean; results: (ToolResultPart | undefined)[]; lines: string[] }>();
   /** One block per tool call id, so a redraw reuses the component's own caches. */
   private readonly toolBlocks = new Map<string, ToolBlock>();
   /**
@@ -789,74 +800,33 @@ export class ConversationViewer implements Component, Focusable {
     const foldedCalls = new Set<string>();
 
     const mode = this.markdownMode();
+    const separator = clamp(th.fg("dim", "───"), width);
     let needsSeparator = false;
-    for (const msg of messages) {
-      if (msg.role === "user") {
-        const text = typeof msg.content === "string"
-          ? msg.content
-          : extractText(msg.content);
-        if (!text.trim()) continue;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.fg("accent", "[User]"));
-        for (const line of wrapTextWithAnsi(text.trim(), width)) {
-          lines.push(line);
-        }
-      } else if (msg.role === "assistant") {
-        const textParts: string[] = [];
-        const toolCalls: ToolCallPart[] = [];
-        for (const c of msg.content) {
-          if (c.type === "text" && c.text) textParts.push(c.text);
-          else if (c.type === "toolCall") toolCalls.push(c);
-        }
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.bold("[Assistant]"));
-        if (textParts.length > 0) {
-          const text = textParts.join("\n").trim();
-          lines.push(...(mode === "off"
-            ? this.rawLines(text, width, false)
-            : this.markdownLines(msg, text, width, false)));
-        }
-        for (const call of toolCalls) {
-          if (!this.toolRendering) {
-            lines.push(truncateToWidth(th.fg("muted", `  [Tool: ${call.name}]`), width));
-            continue;
-          }
-          foldedCalls.add(call.id);
-          // An aborted or failed response never runs its calls, so no result
-          // will arrive: say so, as pi's session replay does.
-          const notRun = msg.stopReason === "aborted" ? "Operation aborted"
-            : msg.stopReason === "error" ? msg.errorMessage || "Error"
-            : undefined;
-          lines.push(...this.toolBlockLines(call, results.get(call.id), notRun, width));
-        }
-      } else if (msg.role === "toolResult") {
-        // Rendered under its call above. A result whose call is not in the
-        // transcript — a compacted prefix, a reopened session — keeps the plain
-        // block, because there is no call row to fold it into.
-        if (foldedCalls.has(msg.toolCallId)) continue;
-        const { text, elided } = capResult(extractText(msg.content).trim());
-        if (!text) continue;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(th.fg("dim", "[Result]"));
-        lines.push(...(mode === "all"
-          ? this.markdownLines(msg, text, width, true)
-          : this.rawLines(text, width, true)));
-        if (elided) lines.push(truncateToWidth(th.fg("dim", truncationNote(elided)), width));
-      } else if ((msg as any).role === "bashExecution") {
-        const bash = msg as any;
-        if (needsSeparator) lines.push(th.fg("dim", "───"));
-        lines.push(truncateToWidth(th.fg("muted", `  $ ${bash.command}`), width));
-        if (bash.output?.trim()) {
-          // Same cap as a tool result, never Markdown: command output is the one
-          // thing here that is definitionally not authored as Markdown.
-          const { text, elided } = capResult(bash.output.trim());
-          lines.push(...this.rawLines(text, width, true));
-          if (elided) lines.push(truncateToWidth(th.fg("dim", truncationNote(elided)), width));
-        }
-      } else {
-        continue;
-      }
+    const append = (segment: string[]) => {
+      if (segment.length === 0) return;
+      if (needsSeparator) lines.push(separator);
+      for (const line of segment) lines.push(line);
       needsSeparator = true;
+    };
+    for (const msg of messages) {
+      if (msg.role === "toolResult" && foldedCalls.has(msg.toolCallId)) continue;
+      const callResults: (ToolResultPart | undefined)[] = [];
+      if (msg.role === "assistant") {
+        for (const c of msg.content) {
+          if (c.type !== "toolCall") continue;
+          callResults.push(results.get(c.id));
+          if (this.toolRendering) foldedCalls.add(c.id);
+        }
+      }
+      // Finished messages never change, so their rows are rebuilt only when an
+      // input to them does: width, mode, expansion, or a call's result arriving.
+      let entry = this.lineCache.get(msg);
+      if (!entry || entry.width !== width || entry.mode !== mode || entry.expanded !== this.toolsExpanded
+        || entry.results.length !== callResults.length || entry.results.some((r, i) => r !== callResults[i])) {
+        entry = { width, mode, expanded: this.toolsExpanded, results: callResults, lines: this.messageLines(msg, width, mode, results) };
+        this.lineCache.set(msg, entry);
+      }
+      append(entry.lines);
     }
 
     // Streaming indicator for running agents
@@ -866,10 +836,68 @@ export class ConversationViewer implements Component, Focusable {
       lines.push(truncateToWidth(th.fg("accent", "▍ ") + th.fg("dim", act), width));
     }
 
-    // Only clamp what actually overflows: `truncateToWidth` takes a slow,
-    // character-by-character path for any line carrying an escape sequence, and
-    // a tool block's rows are already rendered at this width by its component.
-    return lines.map(l => (visibleWidth(l) > width ? truncateToWidth(l, width) : l));
+    return lines;
+  }
+
+  /** One message's rows, clamped to `width`; empty when the message shows nothing. */
+  private messageLines(msg: AgentMessage, width: number, mode: ViewerMarkdownMode, results: Map<string, ToolResultPart>): string[] {
+    const th = this.theme;
+    const lines: string[] = [];
+    if (msg.role === "user") {
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : extractText(msg.content);
+      if (!text.trim()) return lines;
+      lines.push(th.fg("accent", "[User]"));
+      lines.push(...wrapTextWithAnsi(text.trim(), width));
+    } else if (msg.role === "assistant") {
+      const textParts: string[] = [];
+      const toolCalls: ToolCallPart[] = [];
+      for (const c of msg.content) {
+        if (c.type === "text" && c.text) textParts.push(c.text);
+        else if (c.type === "toolCall") toolCalls.push(c);
+      }
+      lines.push(th.bold("[Assistant]"));
+      if (textParts.length > 0) {
+        const text = textParts.join("\n").trim();
+        lines.push(...(mode === "off"
+          ? this.rawLines(text, width, false)
+          : this.markdownLines(msg, text, width, false)));
+      }
+      for (const call of toolCalls) {
+        if (!this.toolRendering) {
+          lines.push(truncateToWidth(th.fg("muted", `  [Tool: ${call.name}]`), width));
+          continue;
+        }
+        // An aborted or failed response never runs its calls, so no result
+        // will arrive: say so, as pi's session replay does.
+        const notRun = msg.stopReason === "aborted" ? "Operation aborted"
+          : msg.stopReason === "error" ? msg.errorMessage || "Error"
+          : undefined;
+        lines.push(...this.toolBlockLines(call, results.get(call.id), notRun, width));
+      }
+    } else if (msg.role === "toolResult") {
+      // Reached only when its call is not in the transcript — a compacted
+      // prefix, a reopened session — so there is no call row to fold it into.
+      const { text, elided } = capResult(extractText(msg.content).trim());
+      if (!text) return lines;
+      lines.push(th.fg("dim", "[Result]"));
+      lines.push(...(mode === "all"
+        ? this.markdownLines(msg, text, width, true)
+        : this.rawLines(text, width, true)));
+      if (elided) lines.push(truncateToWidth(th.fg("dim", truncationNote(elided)), width));
+    } else if ((msg as any).role === "bashExecution") {
+      const bash = msg as any;
+      lines.push(truncateToWidth(th.fg("muted", `  $ ${bash.command}`), width));
+      if (bash.output?.trim()) {
+        // Same cap as a tool result, never Markdown: command output is the one
+        // thing here that is definitionally not authored as Markdown.
+        const { text, elided } = capResult(bash.output.trim());
+        lines.push(...this.rawLines(text, width, true));
+        if (elided) lines.push(truncateToWidth(th.fg("dim", truncationNote(elided)), width));
+      }
+    }
+    return lines.map(l => clamp(l, width));
   }
 
   /**

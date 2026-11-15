@@ -112,11 +112,11 @@ describe("fullscreen conversation observer", () => {
     expect(mouse({ wheelDelta: -5 })).toMatchObject({ handled: true });
     const paused = firstRow(render());
     expect(paused).not.toBe(bottom);
-    messages[0].content += "\nrow-100";
+    messages.push({ role: "user", content: "row-100" });
     expect(firstRow(render())).toBe(paused);
     mouse({ wheelDelta: 1000 });
     expect(render().join("\n")).toContain("row-100");
-    messages[0].content += "\nrow-101";
+    messages.push({ role: "user", content: "row-101" });
     expect(render().join("\n")).toContain("row-101");
     mouse({ wheelDelta: -1000 });
     expect(render().join("\n")).toContain("row-000");
